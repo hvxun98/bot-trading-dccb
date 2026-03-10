@@ -193,7 +193,7 @@ def run_live_bot(symbol='BTC/USDT:USDT'):
                     sl_price = base_price + (atr_15m * 1.5)
                     tp_price = base_price - (atr_15m * 3.0)
                 
-                msg = f"⚡ <b>TÍN HIỆU SCALPING VÀO LỆNH</b>\n\nCặp: <b>{side} {symbol}</b>\nBase/Check: <b>M15 v H1</b>\nEntry: <b>${base_price}</b>\n\n🤖<i>Tỉ lệ win: <b>{prob_scalping:.1f}%</b></i>\n🛑 <i>SL: <b>${sl_price:.2f}</b></i>\n🎯 <i>TP: <b>${tp_price:.2f}</b></i>\n\n💡 <b>Lý do Bot vào lệnh:</b>\n<i>- {reason_str}.</i>"
+                msg = f"⚡ <b>TÍN HIỆU SCALPING VÀO LỆNH</b>\n\n<b>{side} {symbol}</b>\nBase/Check: <b>M15 v H1</b>\nEntry: <b>${base_price}</b>\n\n🤖<i>Tỉ lệ win: <b>{prob_scalping:.1f}%</b></i>\n🛑 <i>SL: <b>${sl_price:.2f}</b></i>\n🎯 <i>TP: <b>${tp_price:.2f}</b></i>\n\n💡 <b>Lý do Bot vào lệnh:</b>\n<i>- {reason_str}.</i>"
                 send_telegram_message(msg)
                 
                 # Cập nhật Global State
