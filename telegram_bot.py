@@ -240,7 +240,7 @@ def run_live_bot(symbol='BTC/USDT:USDT'):
                         sl_price = base_price + (atr_1h * 1.5)
                         tp_price = base_price - (atr_1h * 3.0)
 
-                    msg = f"🏛 <b>TÍN HIỆU TRUNG HẠN VÀO LỆNH</b>\n\nCặp: <b>{side} {symbol}</b>\nBase/Check: <b>H1 v H4, D1</b>\nEntry: <b>${base_price}</b>\n\n🤖 <i>Tỉ lệ win: <b>{prob_medium:.1f}%</b></i>\n🛑 <i>SL: <b>${sl_price:.2f}</b></i>\n🎯 <i>TP: <b>${tp_price:.2f}</b></i>\n\n💡 <b>Lý do Bot vào lệnh:</b>\n<i>- {reason_str}.</i>"
+                    msg = f"🏛 <b>TÍN HIỆU TRUNG HẠN VÀO LỆNH</b>\n\n<b>{side} {symbol}</b>\nBase/Check: <b>H1 v H4, D1</b>\nEntry: <b>${base_price}</b>\n\n🤖 <i>Tỉ lệ win: <b>{prob_medium:.1f}%</b></i>\n🛑 <i>SL: <b>${sl_price:.2f}</b></i>\n🎯 <i>TP: <b>${tp_price:.2f}</b></i>\n\n💡 <b>Lý do Bot vào lệnh:</b>\n<i>- {reason_str}.</i>"
                     send_telegram_message(msg)
                     
                     # Cập nhật Global State
