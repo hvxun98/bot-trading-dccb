@@ -5,6 +5,26 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 import joblib
 
+def calc_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+def calc_adx(df, period=14):
+    up = df['high'] - df['high'].shift(1)
+    down = df['low'].shift(1) - df['low']
+    pdm = np.where((up > down) & (up > 0), up, 0)
+    ndm = np.where((down > up) & (down > 0), down, 0)
+    
+    tr = df['tr'].rolling(window=period).sum()
+    pdi = 100 * pd.Series(pdm, index=df.index).rolling(window=period).sum() / tr
+    ndi = 100 * pd.Series(ndm, index=df.index).rolling(window=period).sum() / tr
+    
+    dx = 100 * (abs(pdi - ndi) / (pdi + ndi))
+    return dx.rolling(window=period).mean()
+
 def load_and_prep_tf(tf_name):
     """Đọc CSV một khung thời gian và tính toán các đặc trưng (Features) cơ bản"""
     try:
@@ -31,8 +51,16 @@ def load_and_prep_tf(tf_name):
     df['tr'] = df[['tr0', 'tr1', 'tr2']].max(axis=1)
     df[f'ATR_{tf_name}'] = df['tr'].rolling(window=14).mean()
     
+    # Tính các chỉ báo Tối thượng (RSI & ADX & Đột biến Khối lượng)
+    df[f'RSI_{tf_name}'] = calc_rsi(df['close'], period=14)
+    df[f'ADX_{tf_name}'] = calc_adx(df, period=14)
+    df[f'Vol_Spike_{tf_name}'] = df['volume'] / df['volume'].rolling(window=20).mean() # Khối lượng so với MA20
+    
     # Giữ lại các cột quan trọng
-    cols_to_keep = ['timestamp', 'open', 'high', 'low', 'close', f'EMA_10_{tf_name}', f'EMA_50_{tf_name}', f'Body_{tf_name}', f'High_Shadow_{tf_name}', f'Low_Shadow_{tf_name}', f'ATR_{tf_name}']
+    cols_to_keep = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 
+                    f'EMA_10_{tf_name}', f'EMA_50_{tf_name}', f'Body_{tf_name}', 
+                    f'High_Shadow_{tf_name}', f'Low_Shadow_{tf_name}', f'ATR_{tf_name}',
+                    f'RSI_{tf_name}', f'ADX_{tf_name}', f'Vol_Spike_{tf_name}']
     return df[cols_to_keep].dropna()
 
 def build_model(base_df, features, model_name, tf_name, tp_min):
@@ -107,10 +135,17 @@ def train_scalping_model():
     merged = pd.merge_asof(merged, df_h4, on='timestamp', direction='backward', suffixes=('', '_drop'))
     merged.dropna(inplace=True)
 
+    # Thêm Khung 1D vào mâm cơm để lấy ADX Vĩ Mô cho Scalping (Không dùng D1 để tính Sóng M15, chỉ dùng để check Sideway)
+    df_d1 = load_and_prep_tf('1d')
+    merged = pd.merge_asof(merged, df_d1[['timestamp', 'ADX_1d']], on='timestamp', direction='backward')
+    merged.dropna(inplace=True)
+
     features = [
         'close', 'EMA_10_15m', 'EMA_50_15m', 'Body_15m', 'High_Shadow_15m', 'Low_Shadow_15m',
-        'EMA_10_1h', 'EMA_50_1h', 'Body_1h',
-        'EMA_10_4h', 'EMA_50_4h'
+        'RSI_15m', 'Vol_Spike_15m',
+        'EMA_10_1h', 'EMA_50_1h', 'Body_1h', 'RSI_1h',
+        'EMA_10_4h', 'EMA_50_4h',
+        'ADX_1d'
     ]
     build_model(merged, features, 'ai_model_scalping', '15m', tp_min=1000)
 
@@ -132,8 +167,9 @@ def train_medium_term_model():
 
     features = [
         'close', 'EMA_10_1h', 'EMA_50_1h', 'Body_1h', 'High_Shadow_1h', 'Low_Shadow_1h',
-        'EMA_10_4h', 'EMA_50_4h', 'Body_4h',
-        'EMA_10_1d', 'EMA_50_1d'
+        'RSI_1h', 'Vol_Spike_1h',
+        'EMA_10_4h', 'EMA_50_4h', 'Body_4h', 'RSI_4h',
+        'EMA_10_1d', 'EMA_50_1d', 'ADX_1d'
     ]
     build_model(merged, features, 'ai_model_medium_term', '1h', tp_min=2000)
 

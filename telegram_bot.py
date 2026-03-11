@@ -6,7 +6,29 @@ import requests
 import sys
 import csv
 import os
+import threading
+import json
 from datetime import datetime
+
+def calc_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+def calc_adx(df, period=14):
+    up = df['high'] - df['high'].shift(1)
+    down = df['low'].shift(1) - df['low']
+    pdm = np.where((up > down) & (up > 0), up, 0)
+    ndm = np.where((down > up) & (down > 0), down, 0)
+    
+    tr = df['tr'].rolling(window=period).sum()
+    pdi = 100 * pd.Series(pdm, index=df.index).rolling(window=period).sum() / tr
+    ndi = 100 * pd.Series(ndm, index=df.index).rolling(window=period).sum() / tr
+    
+    dx = 100 * (abs(pdi - ndi) / (pdi + ndi))
+    return dx.rolling(window=period).mean()
 
 # ==========================================================
 # CẤU HÌNH BOT TELEGRAM
@@ -31,23 +53,87 @@ def log_trade(trade, close_price, result, pnl, rr):
 TELEGRAM_TOKEN = "8729643641:AAEZAtdagjwN-dfxmRzpd9WNkooJtEmyN6w" 
 TELEGRAM_CHAT_ID = "-1003402240606"  
 
-def send_telegram_message(message):
+def send_telegram_message(message, chat_id=None):
+    if chat_id is None:
+        chat_id = TELEGRAM_CHAT_ID
+
     if "ĐIỀN_TOKEN" in TELEGRAM_TOKEN:
         print("\n⚠️ [DEMO MODE] Chưa điền Token. Báo cáo nến:")
         print(message)
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
+    payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
     try:
         requests.post(url, json=payload, timeout=10)
         print("📲 Đã bắn tín hiệu Telegram!")
     except Exception as e:
         print(f"❌ Lỗi gửi Telegram: {e}")
 
+last_update_id = 0
+
+def generate_and_send_report(chat_id):
+    if not os.path.isfile('trade_history.csv'):
+        send_telegram_message("📉 <b>Chưa có dữ liệu giao dịch nào được ghi nhận.</b>", chat_id=chat_id)
+        return
+        
+    try:
+        df = pd.read_csv('trade_history.csv')
+        total_trades = len(df)
+        wins = len(df[df['Result'] == 'WIN'])
+        losses = len(df[df['Result'] == 'LOSS'])
+        winrate = (wins / total_trades * 100) if total_trades > 0 else 0
+        total_pnl = df['PnL_Value'].sum()
+        
+        msg = f"📊 <b>BÁO CÁO CÔNG LÀM VIỆC LƯỚI AI</b> 📊\n\n"
+        msg += f"Tổng lệnh đã bắt: <b>{total_trades}</b>\n"
+        msg += f"Thắng: <b>{wins}</b> | Thua: <b>{losses}</b>\n"
+        msg += f"Tỉ lệ Winrate: <b>{winrate:.1f}%</b>\n"
+        msg += f"Tổng Thu nhập (PnL): <b>{total_pnl:.2f} giá</b>\n\n"
+        
+        if ACTIVE_TRADE:
+            msg += f"<i>⏳ Đang gồng 1 lệnh {ACTIVE_TRADE['side']} ({ACTIVE_TRADE['symbol']}).</i>\n"
+        
+        if total_pnl > 0:
+            msg += "🔥 <i>Sinh lời hiệu quả! Bot rất tự hào về Sếp!</i>"
+        elif total_pnl < 0:
+            msg += "💦 <i>Đang âm vốn sếp ạ, cầu nguyện cùng em nhé!</i>"
+        else:
+             msg += "⚖️ <i>Vốn đang huề, ranh giới sinh tồn mỏng manh!</i>"
+            
+        send_telegram_message(msg, chat_id=chat_id)
+    except Exception as e:
+        print(f"Lỗi đọc file history: {e}")
+
+def poll_telegram_commands():
+    global last_update_id
+    print("👂 Phân luồng nghe lén... Đã kích hoạt radar lệnh Telegram.")
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+            params = {'offset': last_update_id + 1, 'timeout': 30}
+            resp = requests.get(url, params=params, timeout=35)
+            data = resp.json()
+            
+            if data.get('ok'):
+                for result in data['result']:
+                    last_update_id = result['update_id']
+                    
+                    message = result.get('message', {})
+                    text = message.get('text', '')
+                    chat_id = message.get('chat', {}).get('id')
+                    
+                    if '/report' in text:  # Bắt /report hoặc tag kèm /report đều được
+                        print("🤖 Sếp vừa gọi báo cáo, gửi báo cáo ngay!")
+                        generate_and_send_report(chat_id)
+        except Exception as e:
+            time.sleep(5)
+
+import numpy as np
+
 def prep_live_features(exchange, symbol, tf):
     """Kéo dữ liệu API tươi và tính Features"""
-    ohlcv = exchange.fetch_ohlcv(symbol, tf, limit=100)
+    ohlcv = exchange.fetch_ohlcv(symbol, tf, limit=120)
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df[f'EMA_10_{tf}'] = df['close'].ewm(span=10, adjust=False).mean()
     df[f'EMA_50_{tf}'] = df['close'].ewm(span=50, adjust=False).mean()
@@ -55,13 +141,18 @@ def prep_live_features(exchange, symbol, tf):
     df[f'High_Shadow_{tf}'] = df['high'] - df[['open', 'close']].max(axis=1)
     df[f'Low_Shadow_{tf}'] = df[['open', 'close']].min(axis=1) - df['low']
     
-    # Tính toán ATR (Average True Range) chu kỳ 14 cho khoảng giá Cắt Lỗ (Stop Loss) an toàn
+    # Tính toán ATR (Average True Range)
     df['prev_close'] = df['close'].shift(1)
     df['tr0'] = df['high'] - df['low']
     df['tr1'] = (df['high'] - df['prev_close']).abs()
     df['tr2'] = (df['low'] - df['prev_close']).abs()
     df['tr'] = df[['tr0', 'tr1', 'tr2']].max(axis=1)
     df[f'ATR_{tf}'] = df['tr'].rolling(window=14).mean()
+    
+    # Tính các chỉ báo chuyên sâu (RSI, ADX, Volume Spike)
+    df[f'RSI_{tf}'] = calc_rsi(df['close'], period=14)
+    df[f'ADX_{tf}'] = calc_adx(df, period=14)
+    df[f'Vol_Spike_{tf}'] = df['volume'] / df['volume'].rolling(window=20).mean()
 
     # Trả về Dòng dữ liệu của cây nến mới nhất vừa đóng cửa
     return df.iloc[-2] # iloc[-2] là lấy nến VỪA ĐÓNG. iloc[-1] là nến đang chạy dở chưa đóng hẳn.
@@ -71,6 +162,9 @@ def run_live_bot(symbol='BTC/USDT:USDT'):
     print("=====================================================")
     print("🤖 HỆ THỐNG AI TỰ QUẢN LÝ QUỸ (SCALPING + TRUNG HẠN) ĐÃ BẬT")
     print("=====================================================")
+    
+    # Kích hoạt vệ sĩ Radar nghe ngóng lệnh chat từ Sếp trên 1 luồng riêng
+    threading.Thread(target=poll_telegram_commands, daemon=True).start()
     
     try:
         model_scalping = joblib.load('ai_model_scalping.pkl')
@@ -162,12 +256,17 @@ def run_live_bot(symbol='BTC/USDT:USDT'):
             f_1h = prep_live_features(exchange, symbol, '1h')
             f_4h = prep_live_features(exchange, symbol, '4h')
             f_1d = prep_live_features(exchange, symbol, '1d')
+            
+            adx_d1 = f_1d['ADX_1d']
+            market_regime = "SIDEWAY 🐢" if adx_d1 < 25 else "TRENDING 🚀"
 
             # ========================LUỒNG 1: SCALPING AI ========================
             features_scalping = [[
                 f_15m['close'], f_15m['EMA_10_15m'], f_15m['EMA_50_15m'], f_15m['Body_15m'], f_15m['High_Shadow_15m'], f_15m['Low_Shadow_15m'],
-                f_1h['EMA_10_1h'], f_1h['EMA_50_1h'], f_1h['Body_1h'],
-                f_4h['EMA_10_4h'], f_4h['EMA_50_4h']
+                f_15m['RSI_15m'], f_15m['Vol_Spike_15m'],
+                f_1h['EMA_10_1h'], f_1h['EMA_50_1h'], f_1h['Body_1h'], f_1h['RSI_1h'],
+                f_4h['EMA_10_4h'], f_4h['EMA_50_4h'],
+                f_1d['ADX_1d']
             ]]
             
             prob_scalping = max(model_scalping.predict_proba(features_scalping)[0]) * 100
@@ -189,6 +288,8 @@ def run_live_bot(symbol='BTC/USDT:USDT'):
                 if f_1h['EMA_10_1h'] > f_1h['EMA_50_1h']: reason_arr.append("Trend H1 ủng hộ Tăng")
                 elif f_1h['EMA_10_1h'] < f_1h['EMA_50_1h']: reason_arr.append("Trend H1 ủng hộ Giảm")
                 
+                reason_str = "\n- ".join(reason_arr) if reason_arr else "Tín hiệu AI hội tụ"
+                
                 # Rút gọn symbol (Ví dụ BTC/USDT:USDT -> BTC)
                 base_coin = symbol.split('/')[0]
 
@@ -202,7 +303,7 @@ def run_live_bot(symbol='BTC/USDT:USDT'):
                     tp_price = base_price - tp_dist
                 
                 trade_id = str(int(time.time()))
-                msg = f"⚡ <b>TÍN HIỆU SCALPING VÀO LỆNH</b>\n\nID: <b>{trade_id}</b>\n<b>{side} {base_coin}</b>\nBase/Check: <b>M15 v H1</b>\nEntry: <b>${base_price}</b>\n\n🤖<i>Tỉ lệ win: <b>{prob_scalping:.1f}%</b></i>\n🛑 <i>SL: <b>${sl_price:.2f}</b></i>\n🎯 <i>TP: <b>${tp_price:.2f}</b></i>\n\n💡 <b>Lý do Bot vào lệnh:</b>\n<i>- {reason_str}.</i>"
+                msg = f"⚡ <b>TÍN HIỆU SCALPING CHẠM BIẾN</b>\n\nID: <b>{trade_id}</b>\n🌍 Bối cảnh D1: <b>{market_regime} (ADX: {adx_d1:.1f})</b>\n\n<b>{side} {base_coin}</b>\nBase/Check: <b>M15 v H1</b>\nEntry: <b>${base_price}</b>\n\n🤖<i>Tỉ lệ win: <b>{prob_scalping:.1f}%</b></i>\n🛑 <i>SL: <b>${sl_price:.2f}</b></i>\n🎯 <i>TP: <b>${tp_price:.2f}</b></i>\n\n💡 <b>Lập luận:</b>\n<i>- {reason_str}.</i>"
                 send_telegram_message(msg)
                 
                 # Cập nhật Global State
@@ -220,8 +321,9 @@ def run_live_bot(symbol='BTC/USDT:USDT'):
             if is_hourly_candle:
                 features_medium = [[
                     f_1h['close'], f_1h['EMA_10_1h'], f_1h['EMA_50_1h'], f_1h['Body_1h'], f_1h['High_Shadow_1h'], f_1h['Low_Shadow_1h'],
-                    f_4h['EMA_10_4h'], f_4h['EMA_50_4h'], f_4h['Body_4h'],
-                    f_1d['EMA_10_1d'], f_1d['EMA_50_1d']
+                    f_1h['RSI_1h'], f_1h['Vol_Spike_1h'],
+                    f_4h['EMA_10_4h'], f_4h['EMA_50_4h'], f_4h['Body_4h'], f_4h['RSI_4h'],
+                    f_1d['EMA_10_1d'], f_1d['EMA_50_1d'], f_1d['ADX_1d']
                 ]]
                 
                 prob_medium = max(model_medium.predict_proba(features_medium)[0]) * 100
@@ -243,6 +345,8 @@ def run_live_bot(symbol='BTC/USDT:USDT'):
                     if f_1d['EMA_10_1d'] > f_1d['EMA_50_1d']: reason_arr.append("Xu hướng Mùa D1 Tăng")
                     elif f_1d['EMA_10_1d'] < f_1d['EMA_50_1d']: reason_arr.append("Xu hướng Mùa D1 Giảm")
                     
+                    reason_str = "\n- ".join(reason_arr) if reason_arr else "Tín hiệu siêu sóng hội tụ"
+                    
                     # Rút gọn symbol cho nến H1
                     base_coin = symbol.split('/')[0]
 
@@ -256,7 +360,7 @@ def run_live_bot(symbol='BTC/USDT:USDT'):
                         tp_price = base_price - tp_dist
 
                     trade_id = str(int(time.time()))
-                    msg = f"🏛 <b>TÍN HIỆU TRUNG HẠN VÀO LỆNH</b>\n\nID: <b>{trade_id}</b>\n<b>{side} {base_coin}</b>\nBase/Check: <b>H1 v H4, D1</b>\nEntry: <b>${base_price}</b>\n\n🤖 <i>Tỉ lệ win: <b>{prob_medium:.1f}%</b></i>\n🛑 <i>SL: <b>${sl_price:.2f}</b></i>\n🎯 <i>TP: <b>${tp_price:.2f}</b></i>\n\n💡 <b>Lý do Bot vào lệnh:</b>\n<i>- {reason_str}.</i>"
+                    msg = f"🏛 <b>TÍN HIỆU TRUNG HẠN SÓNG DÀI</b>\n\nID: <b>{trade_id}</b>\n🌍 Bối cảnh D1: <b>{market_regime} (ADX: {adx_d1:.1f})</b>\n\n<b>{side} {base_coin}</b>\nBase/Check: <b>H1 v H4, D1</b>\nEntry: <b>${base_price}</b>\n\n🤖 <i>Tỉ lệ win: <b>{prob_medium:.1f}%</b></i>\n🛑 <i>SL: <b>${sl_price:.2f}</b></i>\n🎯 <i>TP: <b>${tp_price:.2f}</b></i>\n\n💡 <b>Lập luận:</b>\n<i>- {reason_str}.</i>"
                     send_telegram_message(msg)
                     
                     # Cập nhật Global State
