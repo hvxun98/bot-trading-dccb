@@ -20,14 +20,14 @@ def log_trade(trade, close_price, result, pnl, rr):
     with open('trade_history.csv', mode='a', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         if not file_exists:
-            writer.writerow(['Time_In', 'Time_Out', 'Symbol', 'Side', 'Entry', 'TP', 'SL', 'Close_Price', 'Result', 'PnL_Percent', 'RR_Ratio'])
+            writer.writerow(['Trade_ID', 'Time_In', 'Time_Out', 'Symbol', 'Side', 'Entry', 'TP', 'SL', 'Close_Price', 'Result', 'PnL_Value', 'RR_Ratio', 'Winrate'])
         
         writer.writerow([
-            trade['time_in'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            trade['trade_id'], trade['time_in'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             trade['symbol'], trade['side'], trade['entry'], trade['tp'], trade['sl'], 
-            close_price, result, f"{pnl:.2f}%", f"{rr:.2f}"
+            close_price, result, f"{pnl:.2f}", f"{rr:.2f}", f"{trade['winrate']:.1f}%"
         ])
-    print(f"📝 Đã ghi lịch sử lệnh {result} vào trade_history.csv")
+    print(f"📝 Đã ghi lịch sử lệnh {trade['trade_id']} vào trade_history.csv")
 TELEGRAM_TOKEN = "8729643641:AAEZAtdagjwN-dfxmRzpd9WNkooJtEmyN6w" 
 TELEGRAM_CHAT_ID = "-1003402240606"  
 
@@ -112,19 +112,19 @@ def run_live_bot(symbol='BTC/USDT:USDT'):
                 rr = 0.0
                 
                 if side == "LÔNG 🟢":
-                    current_pnl = ((base_price - entry) / entry) * 100
+                    current_pnl = base_price - entry
                     if f_15m['high'] >= tp: hit_tp = True
                     elif f_15m['low'] <= sl: hit_sl = True
                 else:
-                    current_pnl = ((entry - base_price) / entry) * 100
+                    current_pnl = entry - base_price
                     if f_15m['low'] <= tp: hit_tp = True
                     elif f_15m['high'] >= sl: hit_sl = True
                 
                 if hit_tp:
                     close_price = tp
                     rr = abs(tp - entry) / abs(sl - entry)
-                    close_pnl = ((close_price - entry) / entry * 100) if side == "LÔNG 🟢" else ((entry - close_price) / entry * 100)
-                    msg = f"✅ <b>CHỐT LỜI THÀNH CÔNG (HIT TP)</b> 🎉\n\nCặp: <b>{symbol}</b>\nSide: <b>{side}</b>\nEntry: <b>${entry}</b>\nChốt tại: <b>${close_price}</b>\n\n💰 Lợi nhuận: <b>+{close_pnl:.2f}%</b>\n⚖️ Tỉ lệ RR: <b>1:{rr:.2f}</b>\n\n<i>Boss bú đẫm nhé! Bắt đầu tìm mồi mới...</i>"
+                    close_pnl = (close_price - entry) if side == "LÔNG 🟢" else (entry - close_price)
+                    msg = f"✅ <b>CHỐT LỜI THÀNH CÔNG (HIT TP)</b> 🎉\n\nID: <b>{ACTIVE_TRADE['trade_id']}</b>\nCặp: <b>{symbol}</b>\nSide: <b>{side}</b>\nEntry: <b>${entry}</b>\nChốt tại: <b>${close_price}</b>\n\n💰 Lợi nhuận: <b>+{close_pnl:.2f} giá</b>\n⚖️ Tỉ lệ RR: <b>1:{rr:.2f}</b>\n\n<i>Boss bú đẫm nhé! Bắt đầu tìm mồi mới...</i>"
                     send_telegram_message(msg)
                     log_trade(ACTIVE_TRADE, close_price, "WIN", close_pnl, rr)
                     ACTIVE_TRADE = None
@@ -132,28 +132,31 @@ def run_live_bot(symbol='BTC/USDT:USDT'):
                 elif hit_sl:
                     close_price = sl
                     rr = -1.0 # Thua luôn mất 1R
-                    close_pnl = ((close_price - entry) / entry * 100) if side == "LÔNG 🟢" else ((entry - close_price) / entry * 100)
-                    msg = f"❌ <b>CẮT MÁU RỒI ĐẠI CA (HIT SL)</b> 🩸\n\nCặp: <b>{symbol}</b>\nSide: <b>{side}</b>\nEntry: <b>${entry}</b>\nDừng lỗ tại: <b>${close_price}</b>\n\n📉 Âm lòi: <b>{close_pnl:.2f}%</b>\n\n<i>Cú lừa của cá mập... Em đi kiếm kèo gỡ đây!</i>"
+                    close_pnl = (close_price - entry) if side == "LÔNG 🟢" else (entry - close_price)
+                    msg = f"❌ <b>CẮT MÁU RỒI ĐẠI CA (HIT SL)</b> 🩸\n\nID: <b>{ACTIVE_TRADE['trade_id']}</b>\nCặp: <b>{symbol}</b>\nSide: <b>{side}</b>\nEntry: <b>${entry}</b>\nDừng lỗ tại: <b>${close_price}</b>\n\n📉 Âm lòi: <b>{close_pnl:.2f} giá</b>\n\n<i>Cú lừa của cá mập... Em đi kiếm kèo gỡ đây!</i>"
                     send_telegram_message(msg)
                     log_trade(ACTIVE_TRADE, close_price, "LOSS", close_pnl, rr)
                     ACTIVE_TRADE = None
                     continue # Bắt đầu tìm mồi mới
                 
-                # Nếu lệnh vẫn còn sống (Chưa chạm TP/SL), báo cáo tình hình mỗi 15 phút
-                if current_pnl > 0:
-                    status_msg = f"📈 <i>Lệnh đang dương <b>+{current_pnl:.2f}%</b> nhé các bé, khấn mạnh lên cho anh 🙏</i>"
-                elif current_pnl < 0:
-                    status_msg = f"📉 <i>Lệnh đang thở oxi <b>{current_pnl:.2f}%</b> các bé ạ 🚑💨</i>"
-                else:
-                    status_msg = f"⚖️ <i>Lệnh vẫn đang huề vốn, nhọc nhằn quá 😮‍💨</i>"
+                # Nếu lệnh vẫn còn sống (Chưa chạm TP/SL), báo cáo tình hình MỖI 1 GIỜ
+                if is_hourly_candle:
+                    t_id = ACTIVE_TRADE['trade_id']
+                    if current_pnl > 0:
+                        status_msg = f"📈 <i>Lệnh [ID: {t_id}] đang dương <b>+{current_pnl:.2f} giá</b> nhé các bé, khấn mạnh lên cho anh 🙏</i>"
+                    elif current_pnl < 0:
+                        status_msg = f"📉 <i>Lệnh [ID: {t_id}] đang thở oxi <b>{current_pnl:.2f} giá</b> các bé ạ 🚑💨</i>"
+                    else:
+                        status_msg = f"⚖️ <i>Lệnh [ID: {t_id}] vẫn đang huề vốn, nhọc nhằn quá 😮‍💨</i>"
+                    send_telegram_message(status_msg)
                 
-                send_telegram_message(status_msg)
                 continue # Dừng luôn luồng soi kèo mới dười đây, sang nến tiếp theo kiểm tra tiếp!
 
             # =========================================================================
 
-            # Nếu CHƯA CÓ LỆNH, ta báo Tình hình săn mồi
-            send_telegram_message("🔎 <i>Anh vẫn đang tìm Entry cho các bé, bình tĩnh nhé! 🚬</i>")
+            # Nếu CHƯA CÓ LỆNH, ta báo Tình hình săn mồi MỖI 1 GIỜ
+            if is_hourly_candle:
+                send_telegram_message("🔎 <i>Anh vẫn đang tìm Entry cho các bé, bình tĩnh nhé! 🚬</i>")
 
             # Bốc tất cả tính năng tươi của 4 khung mấu chốt để xào nấu
             f_1h = prep_live_features(exchange, symbol, '1h')
@@ -173,6 +176,10 @@ def run_live_bot(symbol='BTC/USDT:USDT'):
             if prob_scalping > 65.0:
                 atr_15m = f_15m['ATR_15m']
                 
+                # Tính khoảng cách TP/SL, bắt buộc TP cách bét nhất 1000 giá
+                tp_dist = max(atr_15m * 3.0, 1000)
+                sl_dist = tp_dist / 2.0
+                
                 # Tạo lý do vào lệnh (Reasoning)
                 reason_arr = []
                 if f_15m['EMA_10_15m'] > f_15m['EMA_50_15m']: reason_arr.append("EMA10 cắt lên EMA50")
@@ -182,25 +189,28 @@ def run_live_bot(symbol='BTC/USDT:USDT'):
                 if f_1h['EMA_10_1h'] > f_1h['EMA_50_1h']: reason_arr.append("Trend H1 ủng hộ Tăng")
                 elif f_1h['EMA_10_1h'] < f_1h['EMA_50_1h']: reason_arr.append("Trend H1 ủng hộ Giảm")
                 
-                reason_str = ", ".join(reason_arr) if reason_arr else "Mô hình nến Price Action bí mật"
+                # Rút gọn symbol (Ví dụ BTC/USDT:USDT -> BTC)
+                base_coin = symbol.split('/')[0]
 
                 if pred_scalping == 1:
                     side = "LÔNG 🟢"
-                    sl_price = base_price - (atr_15m * 1.5)
-                    tp_price = base_price + (atr_15m * 3.0)
+                    sl_price = base_price - sl_dist
+                    tp_price = base_price + tp_dist
                 else:
                     side = "XOẠC 🔴"
-                    sl_price = base_price + (atr_15m * 1.5)
-                    tp_price = base_price - (atr_15m * 3.0)
+                    sl_price = base_price + sl_dist
+                    tp_price = base_price - tp_dist
                 
-                msg = f"⚡ <b>TÍN HIỆU SCALPING VÀO LỆNH</b>\n\n<b>{side} {symbol}</b>\nBase/Check: <b>M15 v H1</b>\nEntry: <b>${base_price}</b>\n\n🤖<i>Tỉ lệ win: <b>{prob_scalping:.1f}%</b></i>\n🛑 <i>SL: <b>${sl_price:.2f}</b></i>\n🎯 <i>TP: <b>${tp_price:.2f}</b></i>\n\n💡 <b>Lý do Bot vào lệnh:</b>\n<i>- {reason_str}.</i>"
+                trade_id = str(int(time.time()))
+                msg = f"⚡ <b>TÍN HIỆU SCALPING VÀO LỆNH</b>\n\nID: <b>{trade_id}</b>\n<b>{side} {base_coin}</b>\nBase/Check: <b>M15 v H1</b>\nEntry: <b>${base_price}</b>\n\n🤖<i>Tỉ lệ win: <b>{prob_scalping:.1f}%</b></i>\n🛑 <i>SL: <b>${sl_price:.2f}</b></i>\n🎯 <i>TP: <b>${tp_price:.2f}</b></i>\n\n💡 <b>Lý do Bot vào lệnh:</b>\n<i>- {reason_str}.</i>"
                 send_telegram_message(msg)
                 
                 # Cập nhật Global State
                 ACTIVE_TRADE = {
+                    'trade_id': trade_id,
                     'time_in': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     'symbol': symbol, 'side': side, 'entry': base_price,
-                    'tp': tp_price, 'sl': sl_price
+                    'tp': tp_price, 'sl': sl_price, 'winrate': prob_scalping
                 }
             else:
                  print(f"⚖️ Tiếng nói AI (Scalping): Tín hiệu nhiễu, winrate {prob_scalping:.1f}% nên bỏ qua.")
@@ -220,6 +230,10 @@ def run_live_bot(symbol='BTC/USDT:USDT'):
                 if prob_medium > 60.0:
                     atr_1h = f_1h['ATR_1h']
                     
+                    # Tính khoảng cách TP/SL, bắt buộc TP cách bét nhất 2000 giá
+                    tp_dist = max(atr_1h * 3.0, 2000)
+                    sl_dist = tp_dist / 2.0
+                    
                     # Tạo lý do vào lệnh (Reasoning) cho H1
                     reason_arr = []
                     if f_1h['EMA_10_1h'] > f_1h['EMA_50_1h']: reason_arr.append("EMA10 cắt lên EMA50 mạnh")
@@ -229,25 +243,28 @@ def run_live_bot(symbol='BTC/USDT:USDT'):
                     if f_1d['EMA_10_1d'] > f_1d['EMA_50_1d']: reason_arr.append("Xu hướng Mùa D1 Tăng")
                     elif f_1d['EMA_10_1d'] < f_1d['EMA_50_1d']: reason_arr.append("Xu hướng Mùa D1 Giảm")
                     
-                    reason_str = ", ".join(reason_arr) if reason_arr else "Hành vi giá Cá Mập đè nén"
+                    # Rút gọn symbol cho nến H1
+                    base_coin = symbol.split('/')[0]
 
                     if pred_medium == 1:
                         side = "LÔNG 🟢"
-                        sl_price = base_price - (atr_1h * 1.5)
-                        tp_price = base_price + (atr_1h * 3.0)
+                        sl_price = base_price - sl_dist
+                        tp_price = base_price + tp_dist
                     else:
                         side = "XOẠC 🔴"
-                        sl_price = base_price + (atr_1h * 1.5)
-                        tp_price = base_price - (atr_1h * 3.0)
+                        sl_price = base_price + sl_dist
+                        tp_price = base_price - tp_dist
 
-                    msg = f"🏛 <b>TÍN HIỆU TRUNG HẠN VÀO LỆNH</b>\n\n<b>{side} {symbol}</b>\nBase/Check: <b>H1 v H4, D1</b>\nEntry: <b>${base_price}</b>\n\n🤖 <i>Tỉ lệ win: <b>{prob_medium:.1f}%</b></i>\n🛑 <i>SL: <b>${sl_price:.2f}</b></i>\n🎯 <i>TP: <b>${tp_price:.2f}</b></i>\n\n💡 <b>Lý do Bot vào lệnh:</b>\n<i>- {reason_str}.</i>"
+                    trade_id = str(int(time.time()))
+                    msg = f"🏛 <b>TÍN HIỆU TRUNG HẠN VÀO LỆNH</b>\n\nID: <b>{trade_id}</b>\n<b>{side} {base_coin}</b>\nBase/Check: <b>H1 v H4, D1</b>\nEntry: <b>${base_price}</b>\n\n🤖 <i>Tỉ lệ win: <b>{prob_medium:.1f}%</b></i>\n🛑 <i>SL: <b>${sl_price:.2f}</b></i>\n🎯 <i>TP: <b>${tp_price:.2f}</b></i>\n\n💡 <b>Lý do Bot vào lệnh:</b>\n<i>- {reason_str}.</i>"
                     send_telegram_message(msg)
                     
                     # Cập nhật Global State
                     ACTIVE_TRADE = {
+                        'trade_id': trade_id,
                         'time_in': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         'symbol': symbol, 'side': side, 'entry': base_price,
-                        'tp': tp_price, 'sl': sl_price
+                        'tp': tp_price, 'sl': sl_price, 'winrate': prob_medium
                     }
                 else:
                     print(f"⚖️Tín hiệu trung lập, winrate {prob_medium:.1f}% nên bỏ qua.")

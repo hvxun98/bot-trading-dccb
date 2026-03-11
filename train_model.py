@@ -23,14 +23,54 @@ def load_and_prep_tf(tf_name):
     df[f'High_Shadow_{tf_name}'] = df['high'] - df[['open', 'close']].max(axis=1)
     df[f'Low_Shadow_{tf_name}'] = df[['open', 'close']].min(axis=1) - df['low']
     
+    # Tính toán ATR để chuẩn hóa TP/SL khi huấn luyện
+    df['prev_close'] = df['close'].shift(1)
+    df['tr0'] = df['high'] - df['low']
+    df['tr1'] = (df['high'] - df['prev_close']).abs()
+    df['tr2'] = (df['low'] - df['prev_close']).abs()
+    df['tr'] = df[['tr0', 'tr1', 'tr2']].max(axis=1)
+    df[f'ATR_{tf_name}'] = df['tr'].rolling(window=14).mean()
+    
     # Giữ lại các cột quan trọng
-    cols_to_keep = ['timestamp', 'close', f'EMA_10_{tf_name}', f'EMA_50_{tf_name}', f'Body_{tf_name}', f'High_Shadow_{tf_name}', f'Low_Shadow_{tf_name}']
+    cols_to_keep = ['timestamp', 'open', 'high', 'low', 'close', f'EMA_10_{tf_name}', f'EMA_50_{tf_name}', f'Body_{tf_name}', f'High_Shadow_{tf_name}', f'Low_Shadow_{tf_name}', f'ATR_{tf_name}']
     return df[cols_to_keep].dropna()
 
-def build_model(base_df, features, model_name):
+def build_model(base_df, features, model_name, tf_name, tp_min):
     """Hàm lõi để Training Rừng Ngẫu Nhiên và xuất Model"""
-    # 1: Sẽ Tăng, 0: Sẽ Giảm (Dựa vào giá close của cây nến Base tiếp theo)
-    base_df['Target'] = (base_df['close'].shift(-1) > base_df['close']).astype(int)
+    print(f"Xử lý gán nhãn Win/Loss bằng cách quét giá tương lai (TP/SL)...")
+    closes = base_df['close'].values
+    highs = base_df['high'].values
+    lows = base_df['low'].values
+    atrs = base_df[f'ATR_{tf_name}'].values
+    
+    n = len(closes)
+    targets = np.full(n, 2, dtype=int)
+    
+    for i in range(n - 1):
+        entry = closes[i]
+        atr = atrs[i]
+        if pd.isna(atr): continue
+            
+        tp_dist = max(atr * 3.0, tp_min)
+        sl_dist = tp_dist / 2.0 # SL không quá nửa quãng đường tới TP
+        
+        long_tp = entry + tp_dist; long_sl = entry - sl_dist
+        short_tp = entry - tp_dist; short_sl = entry + sl_dist
+        
+        target = 2
+        for j in range(i + 1, min(i + 100, n)):
+            h = highs[j]; l = lows[j]
+            long_hit_sl = l <= long_sl; long_hit_tp = h >= long_tp
+            short_hit_sl = h >= short_sl; short_hit_tp = l <= short_tp
+            
+            if long_hit_tp and not long_hit_sl: target = 1; break
+            if short_hit_tp and not short_hit_sl: target = 0; break
+            if long_hit_sl and short_hit_sl: target = 2; break
+                
+        targets[i] = target
+
+    base_df['Target'] = targets
+    base_df = base_df[base_df['Target'] != 2].copy() # Bỏ các tín hiệu nhiễu không trúng TP
     base_df.dropna(inplace=True)
     
     X = base_df[features]
@@ -72,7 +112,7 @@ def train_scalping_model():
         'EMA_10_1h', 'EMA_50_1h', 'Body_1h',
         'EMA_10_4h', 'EMA_50_4h'
     ]
-    build_model(merged, features, 'ai_model_scalping')
+    build_model(merged, features, 'ai_model_scalping', '15m', tp_min=1000)
 
 def train_medium_term_model():
     print("-------------------------------------------------")
@@ -95,7 +135,7 @@ def train_medium_term_model():
         'EMA_10_4h', 'EMA_50_4h', 'Body_4h',
         'EMA_10_1d', 'EMA_50_1d'
     ]
-    build_model(merged, features, 'ai_model_medium_term')
+    build_model(merged, features, 'ai_model_medium_term', '1h', tp_min=2000)
 
 if __name__ == "__main__":
     train_scalping_model()
