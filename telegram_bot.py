@@ -466,11 +466,15 @@ def send_telegram_message(message, chat_id=None):
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
-    try:
-        requests.post(url, json=payload, timeout=10)
-        print("📲 Đã bắn tín hiệu Telegram!")
-    except Exception as e:
-        print(f"❌ Lỗi gửi Telegram: {e}")
+    for attempt in range(3):
+        try:
+            requests.post(url, json=payload, timeout=10)
+            print("📲 Đã bắn tín hiệu Telegram!")
+            return
+        except Exception as e:
+            print(f"❌ Lỗi gửi Telegram (Lần {attempt+1}): {e}")
+            if attempt < 2:
+                time.sleep(2)
 
 last_update_id = 0
 
@@ -720,12 +724,6 @@ def run_live_bot(symbol='BTC/USDT:USDT'):
     print("🤖 HỆ THỐNG AI TỰ QUẢN LÝ QUỸ (SCALPING + TRUNG HẠN) ĐÃ BẬT")
     print("=====================================================")
     
-    # Kích hoạt vệ sĩ Radar nghe ngóng lệnh chat từ Sếp trên 1 luồng riêng
-    threading.Thread(target=poll_telegram_commands, daemon=True).start()
-    # Kích hoạt Radar mồi giá Alert mỗi 15 giây
-    threading.Thread(target=monitor_price_alerts, args=(symbol,), daemon=True).start()
-    
-    
     try:
         model_scalping = joblib.load('ai_model_scalping.pkl')
         model_medium = joblib.load('ai_model_medium_term.pkl')
@@ -761,8 +759,13 @@ def run_live_bot(symbol='BTC/USDT:USDT'):
         except Exception as e:
             print(f"⚠️ Lỗi khôi phục lệnh: {e}")
 
+    # Kích hoạt vệ sĩ Radar nghe ngóng lệnh chat từ Sếp trên 1 luồng riêng
+    threading.Thread(target=poll_telegram_commands, daemon=True).start()
+    # Kích hoạt Radar mồi giá Alert mỗi 15 giây
+    threading.Thread(target=monitor_price_alerts, args=(symbol,), daemon=True).start()
+
     exchange = ccxt.okx({'enableRateLimit': True})
-    loop_interval_sec = 900 # 15 Phút check 1 lần cho Scalping
+    loop_interval_sec = 300 # 5 Phút check 1 lần
 
     while True:
         try:
@@ -770,7 +773,8 @@ def run_live_bot(symbol='BTC/USDT:USDT'):
             remainder = current_time % loop_interval_sec
             sleep_time = loop_interval_sec - remainder + 3 
             
-            is_hourly_candle = (int(current_time + sleep_time) % 3600) < 60
+            # Cấu hình báo cáo mỗi giờ: check xem nến 5p tới có trùng mốc giờ tròn không
+            is_hourly_candle = (int(current_time + sleep_time) % 3600) < 300
             
             print(f"[{time.strftime('%H:%M:%S')}] Đang canh me... Chờ {int(sleep_time)} giây nữa nến sẽ Đóng.")
             time.sleep(sleep_time)
